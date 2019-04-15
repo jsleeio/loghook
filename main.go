@@ -25,10 +25,11 @@ const (
 
 // Config contains the runtime configuration data for loghook.
 type Config struct {
-	Path     *string
-	Secret   *string
-	Listen   *string
-	Counters *prometheus.CounterVec
+	Path           *string
+	Secret         *string
+	ReceiverListen *string
+	HealthListen   *string
+	Counters       *prometheus.CounterVec
 }
 
 var config Config
@@ -122,17 +123,35 @@ func initMetrics() *prometheus.CounterVec {
 	return events
 }
 
+func healthAndMetricsEndpoint(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "OK") })
+	mux.Handle("/metrics", promhttp.Handler())
+	server := &http.Server{Addr: addr, Handler: mux}
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatal().Err(err).Msg("can't start metrics/health web listener")
+	}
+}
+
+func postEndpoint(addr string) {
+	mux := http.NewServeMux()
+	mux.HandleFunc(*config.Path, handler)
+	server := &http.Server{Addr: addr, Handler: mux}
+	if err := server.ListenAndServe(); err != nil {
+		log.Fatal().Err(err).Msg("can't start log-receiver web listener")
+	}
+}
+
 func main() {
 	secret := os.Getenv(SecretEnvVarName)
 	config = Config{
-		Path:     flag.String("receiver", "/post", "specify the path that Github will post to"),
-		Listen:   flag.String("listen", ":3000", "[address]:port to bind to"),
-		Secret:   &secret,
-		Counters: initMetrics(),
+		Path:           flag.String("receiver", "/post", "specify the path that Github will post to"),
+		ReceiverListen: flag.String("receiver-listen", ":3000", "[address]:port to bind to for receiving webhook payloads"),
+		HealthListen:   flag.String("health-listen", ":3001", "[address]:port to bind to for exposing healthcheck and metrics"),
+		Secret:         &secret,
+		Counters:       initMetrics(),
 	}
 	flag.Parse()
-	http.HandleFunc(*config.Path, handler)
-	http.HandleFunc("/health", func(w http.ResponseWriter, req *http.Request) { io.WriteString(w, "OK") })
-	http.Handle("/metrics", promhttp.Handler())
-	http.ListenAndServe(*config.Listen, nil)
+	go healthAndMetricsEndpoint(*config.HealthListen)
+	postEndpoint(*config.ReceiverListen)
 }
