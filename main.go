@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/hex"
@@ -12,6 +11,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/jeremywohl/flatten"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
@@ -30,6 +30,7 @@ type Config struct {
 	ReceiverListen *string
 	HealthListen   *string
 	Counters       *prometheus.CounterVec
+	SkipVerify     *bool
 }
 
 var config Config
@@ -62,7 +63,7 @@ func sanityCheckRequest(w http.ResponseWriter, req *http.Request) (bool, []byte)
 	}
 
 	// If we have a Secret set, we should check the MAC
-	if *config.Secret != "" {
+	if *config.Secret != "" && !*config.SkipVerify {
 		sig := req.Header.Get("X-Hub-Signature")
 
 		if sig == "" {
@@ -88,23 +89,29 @@ func handler(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	// for the sake of simplicity, don't actually unmarshal the JSON payload, just compact it
-	buf := new(bytes.Buffer)
-	err := json.Compact(buf, body)
-	jsonOk := true
-	logBody := string(body)
+	structuredevent := make(map[string]interface{})
+	err := json.Unmarshal(body, &structuredevent)
 	if err != nil {
-		// on error, log the untrammeled JSON for debug purposes. This should not be an easy
-		// vector for log spam/denial of service, as we don't get this far without validating
-		// the message against the HMAC shared secret.
-		log.Warn().Str("github_event_raw", string(body)).Msg("Error compacting JSON payload")
-		jsonOk = false
-	} else {
-		logBody = buf.String()
+		log.Error().Err(err).Bool("github_json_ok", false).Msg("unmarshaling Github event")
+		return
+	}
+	flatevent, err := flatten.Flatten(structuredevent, "github_event_", flatten.SeparatorStyle{Middle: "_"})
+	if err != nil {
+		log.Error().Err(err).Bool("github_json_ok", false).Msg("flattening Github event")
+		return
 	}
 	event := req.Header.Get("X-GitHub-Event")
-	config.Counters.With(prometheus.Labels{"event": event}).Inc()
-	log.Info().Str("github_event_type", event).Bool("github_json_ok", jsonOk).Str("github_event", logBody).Msg("Event received.")
+	logevent := log.Info()
+	for k, v := range flatevent {
+		logevent = logevent.Interface(k, v)
+	}
+	logevent.Str("github_event", event)
+	labels := prometheus.Labels{"event": event, "repository": ""}
+	if reponame, found := flatevent["github_event_repository_full_name"]; found {
+		labels["repository"] = reponame.(string)
+	}
+	config.Counters.With(labels).Inc()
+	logevent.Msg("received an event")
 }
 
 func health(w http.ResponseWriter, req *http.Request) {
@@ -117,7 +124,7 @@ func initMetrics() *prometheus.CounterVec {
 			Name: "github_events_total",
 			Help: "How many GitHub events were received and logged, partitioned by event type",
 		},
-		[]string{"event"},
+		[]string{"event", "repository"},
 	)
 	prometheus.MustRegister(events)
 	return events
@@ -148,6 +155,7 @@ func main() {
 		Path:           flag.String("receiver", "/post", "specify the path that Github will post to"),
 		ReceiverListen: flag.String("receiver-listen", ":3000", "[address]:port to bind to for receiving webhook payloads"),
 		HealthListen:   flag.String("health-listen", ":3001", "[address]:port to bind to for exposing healthcheck and metrics"),
+		SkipVerify:     flag.Bool("skip-verify", false, "don't verify message digests. For simplifying testing, only! Don't use in production!"),
 		Secret:         &secret,
 		Counters:       initMetrics(),
 	}
