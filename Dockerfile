@@ -1,5 +1,5 @@
 # Start by building the application.
-FROM golang:1.12 AS build
+FROM golang:1.13 AS build
 RUN \
   adduser \
     --home=/build \
