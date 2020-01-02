@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"regexp"
 
 	"github.com/jeremywohl/flatten"
 	"github.com/prometheus/client_golang/prometheus"
@@ -31,6 +32,7 @@ type Config struct {
 	HealthListen   *string
 	Counters       *prometheus.CounterVec
 	SkipVerify     *bool
+	SkipFieldsRe   *regexp.Regexp
 }
 
 var config Config
@@ -103,7 +105,9 @@ func handler(w http.ResponseWriter, req *http.Request) {
 	event := req.Header.Get("X-GitHub-Event")
 	logevent := log.Info()
 	for k, v := range flatevent {
-		logevent = logevent.Interface(k, v)
+		if !config.SkipFieldsRe.MatchString(k) {
+			logevent = logevent.Interface(k, v)
+		}
 	}
 	logevent.Str("github_event", event)
 	labels := prometheus.Labels{"event": event, "repository": ""}
@@ -159,7 +163,9 @@ func main() {
 		Secret:         &secret,
 		Counters:       initMetrics(),
 	}
+	skipFieldsRe := flag.String("skip-fields-regex", "_url$", "RE2 regular expression to filter out fields by field name")
 	flag.Parse()
+	config.SkipFieldsRe = regexp.MustCompile(*skipFieldsRe)
 	go healthAndMetricsEndpoint(*config.HealthListen)
 	postEndpoint(*config.ReceiverListen)
 }
