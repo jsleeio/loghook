@@ -20,7 +20,6 @@ while getopts "e:f:k:nt:" opt ; do
 done
 
 $n curl \
-  --trace-ascii $$.log \
   --header 'Content-Type: application/json' \
   --header "X-GitHub-Event: $event" \
   --header "X-Hub-Signature: sha1=$(cat "$file" | tr -d '\n' | openssl sha1 -hmac "$hmackey" | awk '{ print $NF }')" \
