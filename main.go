@@ -24,6 +24,17 @@ const (
 	SecretEnvVarName = "LOGHOOK_GITHUB_WEBHOOK_SECRET"
 )
 
+type regexpSliceFlag []*regexp.Regexp
+
+func (i *regexpSliceFlag) String() string {
+	return "a collection of regular expressions"
+}
+
+func (i *regexpSliceFlag) Set(value string) error {
+	*i = append(*i, regexp.MustCompile(value))
+	return nil
+}
+
 // Config contains the runtime configuration data for loghook.
 type Config struct {
 	Path           *string
@@ -32,7 +43,7 @@ type Config struct {
 	HealthListen   *string
 	Counters       *prometheus.CounterVec
 	SkipVerify     *bool
-	SkipFieldsRe   *regexp.Regexp
+	SkipFieldsRe   regexpSliceFlag
 }
 
 var config Config
@@ -105,7 +116,14 @@ func handler(w http.ResponseWriter, req *http.Request) {
 	event := req.Header.Get("X-GitHub-Event")
 	logevent := log.Info()
 	for k, v := range flatevent {
-		if !config.SkipFieldsRe.MatchString(k) {
+		emit := true
+		for _, skipre := range config.SkipFieldsRe {
+			if skipre.MatchString(k) {
+				emit = false
+				break
+			}
+		}
+		if emit {
 			logevent = logevent.Interface(k, v)
 		}
 	}
@@ -163,9 +181,8 @@ func main() {
 		Secret:         &secret,
 		Counters:       initMetrics(),
 	}
-	skipFieldsRe := flag.String("skip-fields-regex", "_url$", "RE2 regular expression to filter out fields by field name")
+	flag.Var(&config.SkipFieldsRe, "skip-fields-regex", "RE2 regular expression to filter out fields by flattened field name. Can be specified more than once")
 	flag.Parse()
-	config.SkipFieldsRe = regexp.MustCompile(*skipFieldsRe)
 	go healthAndMetricsEndpoint(*config.HealthListen)
 	postEndpoint(*config.ReceiverListen)
 }
